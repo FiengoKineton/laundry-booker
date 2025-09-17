@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Laundry Booker</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0b1020;--card:#141a2e;--muted:#8892b0;--text:#e6edf7;--accent:#4cc9f0;--good:#22c55e;--bad:#ef4444}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#0b1020,#0d1328);color:var(--text)}
+  .wrap{max-width:960px;margin:auto;padding:20px}
+  .card{background:var(--card);border:1px solid #20284a;border-radius:16px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  button{cursor:pointer;border:1px solid #2a3566;background:#1a2242;color:var(--text);padding:10px 14px;border-radius:10px}
+  button.primary{background:var(--accent);color:#071018;border:none}
+  button.ghost{background:transparent;border-color:#34406f}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  input,select{background:#0f1633;border:1px solid #2a3566;color:var(--text);padding:10px 12px;border-radius:10px}
+  .grid{display:grid;grid-template-columns:120px repeat(7,1fr);gap:8px;margin-top:12px}
+  .slot{border:1px solid #2a3566;border-radius:10px;padding:8px;text-align:center;background:#0f1633;min-height:56px;display:flex;flex-direction:column;justify-content:center}
+  .slot.free{outline:1px dashed #33407a}
+  .slot.mine{background:rgba(76,201,240,.15);border-color:#3e9ec1}
+  .slot.taken{opacity:.65}
+  .dayhead,.timehead{font-weight:600;color:var(--muted)}
+  .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:.9rem;border:1px solid #2a3566}
+  .legend span{display:inline-flex;align-items:center;gap:6px;margin-right:12px;color:var(--muted)}
+  .tag{width:10px;height:10px;border-radius:50%}
+  .t-free{background:#33407a}.t-mine{background:#3e9ec1}.t-taken{background:#475569}
+  .hint{font-size:.9rem;color:var(--muted)}
+  .hr{height:1px;background:#20284a;margin:14px 0}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#101737;border:1px solid #2a3566;padding:10px 14px;border-radius:10px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <h2 style="margin:0">🧺 Laundry Booker</h2>
+    <div class="legend">
+      <span><span class="tag t-free"></span>Free</span>
+      <span><span class="tag t-mine"></span>Yours</span>
+      <span><span class="tag t-taken"></span>Taken</span>
+    </div>
+  </div>
+
+  <div class="card" id="authCard">
+    <div class="row">
+      <label>Email <input id="email" type="email" placeholder="you@example.com" style="width:240px"></label>
+      <label>Name <input id="name" placeholder="Your name" style="width:180px"></label>
+      <button id="btnSignIn" class="primary">Sign in</button>
+      <button id="btnSignOut" class="ghost" style="margin-left:auto;display:none">Sign out</button>
+    </div>
+    <div class="hint">We’ll send a one-time sign-in link. No passwords, no drama.</div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="row">
+      <label>Duration
+        <select id="durationMins">
+          <option value="60">60 min</option>
+          <option value="90" selected>90 min</option>
+          <option value="120">120 min</option>
+          <option value="150">150 min</option>
+          <option value="180">180 min</option>
+        </select>
+      </label>
+      <label>Start (HH:MM)
+        <select id="startHHMM"></select>
+      </label>
+      <div class="row" style="margin-left:auto">
+        <button id="prevWeek" class="ghost">◀ Week</button>
+        <div id="weekLabel" class="pill"></div>
+        <button id="nextWeek" class="ghost">Week ▶</button>
+        <button id="btnBook" class="primary">Book</button>
+      </div>
+    </div>
+    <div class="hr"></div>
+    <div id="grid" class="grid"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://esm.sh/@supabase/supabase-js@2"></script>
+<script>
+  // --- CONFIG ---
+  const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
+  const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
+  const SLOT_STEP_MIN = 30; // grid resolution
+  const DAYS = 7;
+  const DAY_START = 7;  // 07:00
+  const DAY_END   = 22; // 22:00
+
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const ui = {
+    email: document.getElementById('email'),
+    name: document.getElementById('name'),
+    btnSignIn: document.getElementById('btnSignIn'),
+    btnSignOut: document.getElementById('btnSignOut'),
+    duration: document.getElementById('durationMins'),
+    startHHMM: document.getElementById('startHHMM'),
+    prevWeek: document.getElementById('prevWeek'),
+    nextWeek: document.getElementById('nextWeek'),
+    weekLabel: document.getElementById('weekLabel'),
+    grid: document.getElementById('grid'),
+    btnBook: document.getElementById('btnBook'),
+    toast: document.getElementById('toast'),
+  };
+
+  // Utilities
+  const fmtHM = d => d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const yyyy_mm_dd = d => d.toISOString().slice(0,10);
+  function startOfWeek(d){
+    const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const day = (x.getUTCDay()+6)%7; // Monday=0
+    x.setUTCDate(x.getUTCDate()-day);
+    return x;
+  }
+  function addDays(d,n){ const x=new Date(d); x.setUTCDate(x.getUTCDate()+n); return x; }
+  function setTimeUTC(d, hh, mm){
+    const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, mm, 0, 0));
+    return x;
+  }
+  function toast(msg){
+    ui.toast.textContent = msg; ui.toast.style.display='block';
+    setTimeout(()=>ui.toast.style.display='none', 2200);
+  }
+
+  // Fill start times dropdown
+  (function(){
+    const items=[];
+    for(let h=DAY_START; h<=DAY_END-1; h++){
+      for(let m=0; m<60; m+=SLOT_STEP_MIN){
+        items.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+      }
+    }
+    ui.startHHMM.innerHTML = items.map(t=>`<option>${t}</option>`).join('');
+  })();
+
+  let week0 = startOfWeek(new Date()); // current week (UTC Monday)
+  ui.prevWeek.onclick = ()=>{ week0 = addDays(week0, -7); refresh(); };
+  ui.nextWeek.onclick = ()=>{ week0 = addDays(week0,  7); refresh(); };
+
+  // Auth
+  ui.btnSignIn.onclick = async ()=>{
+    if(!ui.email.value.trim()){ toast("Enter your email"); return; }
+    // Save preferred display name to localStorage (stored in row on first booking)
+    if(ui.name.value.trim()) localStorage.setItem('laundry_name', ui.name.value.trim());
+    const { error } = await sb.auth.signInWithOtp({ email: ui.email.value.trim() });
+    if(error){ toast(error.message); return; }
+    toast("Check your email for the sign-in link");
+  };
+
+  ui.btnSignOut.onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
+
+  sb.auth.onAuthStateChange((_evt, session)=>{
+    ui.btnSignOut.style.display = session?.user ? '' : 'none';
+    if(session?.user){
+      ui.email.value = session.user.email || '';
+      ui.name.value = localStorage.getItem('laundry_name') || '';
+    }
+    refresh();
+  });
+
+  // Realtime subscription to bookings
+  const channel = sb.channel('bookings')
+    .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings' },
+        () => refresh())
+    .subscribe();
+
+  async function loadBookings(startISO, endISO){
+    const { data, error } = await sb
+      .from('bookings')
+      .select('*')
+      .gte('start_at', startISO)
+      .lt('start_at', endISO)
+      .order('start_at', { ascending: true });
+    if(error){ console.error(error); toast("Load error"); return []; }
+    return data;
+  }
+
+  function renderGrid(weekStart, bookings, userId){
+    ui.grid.innerHTML = '';
+    // headers
+    ui.grid.insertAdjacentHTML('beforeend', `<div></div>`);
+    for(let i=0;i<DAYS;i++){
+      const d = addDays(weekStart, i);
+      const label = d.toLocaleDateString([], {weekday:'short', day:'2-digit', month:'2-digit'});
+      ui.grid.insertAdjacentHTML('beforeend', `<div class="dayhead">${label}</div>`);
+    }
+    // rows by time
+    const times = [];
+    for(let h=DAY_START; h<=DAY_END-1; h++){
+      for(let m=0; m<60; m+=SLOT_STEP_MIN){
+        times.push([h,m]);
+      }
+    }
+    for(const [h,m] of times){
+      ui.grid.insertAdjacentHTML('beforeend', `<div class="timehead">${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}</div>`);
+      for(let i=0;i<DAYS;i++){
+        const day = addDays(weekStart, i);
+        const cellStart = setTimeUTC(day, h, m);
+        const cellEnd   = new Date(cellStart.getTime() + SLOT_STEP_MIN*60000);
+
+        // Find any booking overlapping this cell
+        const b = bookings.find(bk => {
+          const s = new Date(bk.start_at), e=new Date(bk.end_at);
+          return s < cellEnd && e > cellStart;
+        });
+
+        const id = `c_${i}_${h}_${m}`;
+        if(!b){
+          ui.grid.insertAdjacentHTML('beforeend',
+            `<button id="${id}" class="slot free" title="Free"></button>`);
+          document.getElementById(id).onclick = ()=>{
+            // Snap selector to this start
+            ui.startHHMM.value = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+          };
+        } else {
+          const mine = userId && b.user_id === userId;
+          const cls = mine ? 'mine' : 'taken';
+          const label = mine ? (b.user_name||'You') : (b.user_name||'Busy');
+          ui.grid.insertAdjacentHTML('beforeend',
+            `<div class="slot ${cls}" title="${label}">
+               <div>${label}</div>
+               ${mine ? `<div><button class="ghost" data-del="${b.id}">Cancel</button></div>` : ''}
+             </div>`);
+        }
+      }
+    }
+
+    // wire deletes
+    ui.grid.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const id = btn.getAttribute('data-del');
+        const { error } = await sb.from('bookings').delete().eq('id', id);
+        if(error){ toast(error.message); return; }
+        toast("Booking cancelled");
+      };
+    });
+  }
+
+  async function book(){
+    const sess = (await sb.auth.getSession()).data.session;
+    if(!sess){ toast("Sign in first"); return; }
+    const user = sess.user;
+    const displayName = (ui.name.value.trim() || localStorage.getItem('laundry_name') || user.email || 'User').slice(0,40);
+
+    // compute start/end in UTC from selected week + startHHMM + duration
+    const [hh,mm] = ui.startHHMM.value.split(':').map(Number);
+    const dayIndex = 0; // default to Monday; we’ll use a click on the grid to set time only
+    // Better: use current visible week’s Monday as base and the selected time for TODAY if within week.
+    // To keep UX simple: if user clicked a cell earlier, startHHMM is set; booking is created for the selected day in the picker next.
+  }
+
+  // Book button creates booking for the day that matches dropdown? We’ll add a small day picker.
+  // Minimal tweak: use the middle of the visible week (Wednesday) as “day picker” via arrows? Better: add a select.
+  const dayPicker = document.createElement('select');
+  for(let i=0;i<DAYS;i++){
+    const d = addDays(week0,i);
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = d.toLocaleDateString([], {weekday:'short', day:'2-digit', month:'2-digit'});
+    dayPicker.appendChild(opt);
+  }
+  dayPicker.id = 'dayPicker';
+  dayPicker.style.background = '#0f1633';
+  dayPicker.style.border = '1px solid #2a3566';
+  dayPicker.style.color = 'var(--text)';
+  dayPicker.style.padding = '10px 12px';
+  dayPicker.style.borderRadius = '10px';
+  ui.duration.parentElement.insertAdjacentElement('afterend', dayPicker);
+
+  ui.btnBook.onclick = async ()=>{
+    const sess = (await sb.auth.getSession()).data.session;
+    if(!sess){ toast("Sign in first"); return; }
+    const user = sess.user;
+    const name = (ui.name.value.trim() || localStorage.getItem('laundry_name') || user.email || 'User').slice(0,40);
+    localStorage.setItem('laundry_name', name);
+
+    const dayIdx = parseInt(document.getElementById('dayPicker').value,10);
+    const d = addDays(week0, dayIdx);
+    const [hh,mm] = ui.startHHMM.value.split(':').map(Number);
+    const dur = parseInt(ui.duration.value,10);
+
+    const start = setTimeUTC(d, hh, mm);
+    const end = new Date(start.getTime() + dur*60000);
+
+    const { error } = await sb.from('bookings').insert({
+      user_id: user.id, user_name: name, start_at: start.toISOString(), end_at: end.toISOString()
+    });
+    if(error){ toast(error.message); return; }
+    toast("Booked 🎉");
+  };
+
+  async function refresh(){
+    // Update day picker labels for current week
+    const dp = document.getElementById('dayPicker');
+    dp.innerHTML = '';
+    for(let i=0;i<DAYS;i++){
+      const d = addDays(week0,i);
+      const opt = document.createElement('option');
+      opt.value = i; opt.textContent = d.toLocaleDateString([], {weekday:'short', day:'2-digit', month:'2-digit'});
+      dp.appendChild(opt);
+    }
+    const endWeek = addDays(week0, DAYS);
+    ui.weekLabel.textContent =
+      `${week0.toLocaleDateString()} – ${addDays(week0,6).toLocaleDateString()}`;
+
+    const sess = (await sb.auth.getSession()).data.session;
+    const userId = sess?.user?.id || null;
+    const data = await loadBookings(week0.toISOString(), endWeek.toISOString());
+    renderGrid(week0, data, userId);
+  }
+
+  refresh();
+</script>
+</body>
+</html>
